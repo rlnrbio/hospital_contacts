@@ -1,0 +1,95 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(goldfish)
+library(dplyr)
+
+hcalls = read.csv("calls.csv")
+hactors = read.csv("actors.csv")
+
+hactors = rename(hactors, "label" = "actor")
+hactors$label <- as.character(hactors$label)
+hcalls$sender <- as.character(hcalls$sender)
+hcalls$receiver <- as.character(hcalls$receiver)
+
+
+hcalls$increment <- c(rep(1, dim(hcalls)[1]))
+
+head(hcalls)
+head(hactors)
+#save(hcalls, hactors, file = "contacts_DYNAM.RData")
+
+#load("contacts_DYNAM.RData")
+```
+```{r}
+# using occupation/role in the hospital as attributes for the model
+hactors$admin = as.integer(hactors$role == "ADM")
+hactors$nurse = as.integer(hactors$role == "NUR")
+hactors$med = as.integer(hactors$role == "MED")
+hactors$patient = as.integer(hactors$role == "PAT")
+
+hactors$role_rec = 0
+hactors$role_rec[hactors$role == "ADM"] <- 1
+hactors$role_rec[hactors$role == "NUR"] <- 2
+hactors$role_rec[hactors$role == "MED"] <- 3
+
+```
+
+
+
+
+
+```{r}
+# load initial presence and shift/attendance changes:
+initial = read.csv("present_first_day.csv")
+changes = read.csv("shift_changes.csv")
+
+changes = rename(changes, node=actor, replace=update)
+
+hactors$present <- as.logical(initial$initial_pres)
+changes$replace <- as.logical(changes$replace)
+changes$node <- as.character(changes$node)
+
+changes <- changes[order(changes$time),]
+
+# remove first 6 hours from changes, since they are given as collective data
+#changes <- changes[changes$time >= 6*3600,]
+```
+
+
+```{r}
+# 0
+hactors <- defineNodes(nodes = hactors)
+
+#2 Define changes in presence 
+hactors <- linkEvents(x = hactors, changes, attribute = "present")
+
+
+callNetwork <- defineNetwork(nodes = hactors, directed = FALSE) # this is modelType = 2: one actor takes the initiative and unilaterally imposes that a tie is created or dissolved.
+
+callNetwork <- linkEvents(x = callNetwork, changeEvents = hcalls, nodes = hactors)
+
+# 3
+callsDependent <- defineDependentEvents(events = hcalls, nodes = hactors,
+                                        defaultNetwork = callNetwork)
+
+rate_formula <- callsDependent ~ 1 + indeg + ego(hactors$admin) + ego(hactors$nurse) + ego(hactors$med)
+mod00_rate <- estimate(rate_formula,
+                       model = "DyNAM", subModel = "rate")
+
+summary(mod00_rate)
+
+mod00_choice <- estimate(choice_formula,
+                         model = "DyNAM", subModel = "choice")
+
+summary(mod00_choice)
+```

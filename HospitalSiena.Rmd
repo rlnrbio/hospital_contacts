@@ -1,0 +1,302 @@
+---
+title: "HospitalSiena"
+author: "Raphael Leuner"
+date: "24 1 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+
+
+```
+
+
+```{r message=FALSE,warning=FALSE}
+set.seed(123)
+library(sna)
+library(network)
+library(RSiena)
+
+
+options(scipen = 4)
+```
+
+
+```{r}
+# load actors data
+actors = read.csv("actors.csv")["role"]
+# load network from hospital
+day1 = read.csv("network_day1.csv")
+day1 <- as.matrix(day1[,-1])
+d1net <- network(day1, directed = FALSE)
+
+day2 = read.csv("network_day2.csv")
+day2 <- as.matrix(day2[,-1])
+d2net <- network(day2, directed = FALSE)
+
+day3 = read.csv("network_day3.csv")
+day3 <- as.matrix(day3[,-1])
+d3net <- network(day3, directed = FALSE)
+
+day4 = read.csv("network_day4.csv")
+day4 <- as.matrix(day4[,-1])
+d4net <- network(day4, directed = FALSE)
+
+day1[,rowSums(day1) == 750] <- 10
+day2[,rowSums(day2) == 750] <- 10
+day3[,rowSums(day3) == 750] <- 10
+day4[,rowSums(day4) == 750] <- 10
+
+
+save(day1, day2, day3, day4, actors, file = "contacts.RData")
+```
+
+
+
+```{r}
+Hamming <- function(changetable) {
+    return(changetable[2,1] + changetable[1,2])
+}
+Jaccard <- function(changetable) {
+    return(changetable[2,2]/(changetable[1,2] + changetable[2,1] + changetable[2,2]))
+}
+```
+
+
+
+```{r}
+Hamming(table(day1,day2))
+Hamming(table(day2,day3))
+Hamming(table(day3,day4))
+Hamming(table(day1,day4))
+Jaccard(table(day1,day2))
+Jaccard(table(day2,day3))
+Jaccard(table(day3,day4))
+Jaccard(table(day1,day4))
+
+```
+
+
+
+
+```{r}
+# add role as character to the data
+d1net %v% "role" <- as.character(actors)
+d2net %v% "role" <- as.character(actors)
+d3net %v% "role" <- as.character(actors)
+d4net %v% "role" <- as.character(actors)
+
+```
+
+
+```{r}
+# Densities
+gden(day1)
+gden(day2)
+gden(day3)
+gden(day4)
+
+```
+
+```{r}
+# Transitivities
+gtrans(day1, measure = "weak")
+gtrans(day2, measure = "weak")
+gtrans(day3, measure = "weak")
+gtrans(day4, measure = "weak")
+
+```
+
+
+```{r}
+nets = list(day1, day2, day3, day4)
+network <- c()
+timepoint <- c()
+avg.indeg <- c()
+max.indeg <- c()
+min.indeg <- c()
+avg.outdeg <- c()
+min.outdeg <- c()
+max.outdeg <- c()
+recip <- c()
+transiv <- c()
+isolates <- c()
+geodesics <- c()
+for (i in 1:4) {
+   print(i)
+   # preprocessing
+    net <- nets[[i]]
+
+    indegree <- colSums(net)
+    avg.indeg <- c(avg.indeg, mean(indegree))
+    max.indeg <- c(max.indeg, max(indegree))
+    min.indeg <- c(min.indeg, min(indegree))
+    
+    outdegree <- rowSums(net)
+    avg.outdeg <- c(avg.outdeg, mean(outdegree))
+    max.outdeg <- c(max.outdeg, max(outdegree))
+    min.outdeg <- c(min.outdeg, min(outdegree))
+    
+    transiv <- c(transiv, (gtrans(net, measure <- "weak")))
+    
+    # complete isolates: indegree + outdegree <- 0
+    isolates <- c(isolates, sum((indegree + outdegree) == 0))
+    
+    geodesics <- c(geodesics, mean(geodist(net, inf.replace <- nrow(net))$gdist))
+    
+ }
+
+
+results <- data.frame(
+                      avg.indeg = avg.indeg,
+                      max.indeg = max.indeg,
+                      min.indeg = min.indeg, 
+                      avg.outdeg = avg.outdeg,
+                      min.outdeg = min.outdeg,
+                      max.outdeg = max.outdeg,
+                      transiv = transiv,
+                      isolates = isolates,
+                      geodesics = geodesics)
+
+results
+```
+Create Actor vectors
+```{r}
+actors$role_rec = 0
+actors$role_rec[actors$role == "ADM"] <- 1
+actors$role_rec[actors$role == "NUR"] <- 2
+actors$role_rec[actors$role == "MED"] <- 3
+
+actors$med_staff = 0
+actors$med_staff[actors$role == "NUR"] <- 1
+actors$med_staff[actors$role == "MED"] <- 1
+
+
+admin = as.integer(actors$role == "ADM") -1
+nurse = as.integer(actors$role == "NUR")-1
+medical = as.integer(actors$role == "MED")-1
+patient = as.integer(actors$role == "PAT")-1
+
+med_comb = as.integer(actors$med_staff)
+
+role = as.integer(actors$role_rec)
+```
+
+
+MODEL USING MED_STAFF Aggregated variable instead of separate variables for Nurses, doctors and admins:
+
+```{r}
+netDynamics <- sienaDataCreate(contacts, adm, nur, med, pat, ro)
+print01Report(netDynamics,modelname = 'Report ContactNetwork')
+
+# Rate Function: the speed by which each network actor gets an opportunity for changing her score on the dependent variable.
+
+hmod0 <- getEffects(netDynamics)
+
+estimation.options <- sienaAlgorithmCreate(projname = 'netDynamics-estimates',
+                                           cond = FALSE,
+                                           seed = 1234567, 
+                                           n3 = 2000)
+
+hmod0 <- includeEffects(hmod0, sameX, interaction1 = "ro", name = "contacts")
+
+# EXPERIMENT: REPLACE SAMEX WITH NURSES, MEDICAL AND ADMINISTRATIVE STAFF SEPARATELY
+hmod0 <- includeInteraction(hmod0,
+                             sameX, egoPlusAltX,
+                             interaction1 = c("ro","nur"),
+                             name = 'contacts')
+
+# egoPlusAltX
+
+hmod0 <- includeInteraction(hmod0,
+                             sameX, egoPlusAltX,
+                             interaction1 = c('ro','med'),
+                             name = 'contacts')
+
+
+hmod0 <- includeInteraction(hmod0,
+                             sameX, egoPlusAltX,
+                             interaction1 = c('ro','adm'),
+                             name = 'contacts')
+
+hmod0 <- includeEffects(hmod0, egoPlusAltX, interaction1 = 'nur', name = 'contacts')
+hmod0 <- includeEffects(hmod0, egoPlusAltX, interaction1 = 'adm', name = 'contacts')
+hmod0 <- includeEffects(hmod0, egoPlusAltX, interaction1 = 'med', name = 'contacts')
+
+hmod0 <- includeEffects(hmod0, RateX, type = "rate", interaction1 = 'nur', name = 'contacts')
+hmod0 <- includeEffects(hmod0, RateX, type = "rate", interaction1 = 'adm', name = 'contacts')
+hmod0 <- includeEffects(hmod0, RateX, type = "rate", interaction1 = 'med', name = 'contacts')
+
+hmod0 <- includeEffects(hmod0, transTriads, name = 'contacts')
+hmod0 <- includeEffects(hmod0, degPlus, name = 'contacts')
+
+
+estimation.options <- sienaAlgorithmCreate(projname = 'netDynamics-estimates',
+                                           cond = FALSE,
+                                           seed = 1234567, 
+                                           n3 = 2000)
+
+hmod0.results <- siena07(estimation.options,
+                          data = netDynamics,
+                          effects = hmod0,
+                          returnDeps = TRUE,
+                          useCluster = TRUE,
+                          nbrNodes = 4)
+
+
+hmod0.results
+```
+
+
+
+
+```{r}
+
+library(parallel)
+clust <- makePSOCKcluster(4)
+
+parameter <- hmod0.results$effects$effectName
+estimate <- hmod0.results$theta
+st.error <- sqrt(diag(hmod0.results$covtheta))
+normal.variate <- estimate/st.error
+p.value.2sided <- 2*pnorm(abs(normal.variate),lower.tail = FALSE)
+(results.table <- data.frame(parameter,
+                             estimate = round(estimate,3),
+                             st.error = round(st.error,3),
+                             normal.variate = round(normal.variate,2),
+                             p.value = round(p.value.2sided,4)))
+
+gof1.indegrees <- sienaGOF(hmod0.results,IndegreeDistribution,
+                           varName = "contacts",cumulative = FALSE,
+                           cluster = clust)#
+plot(gof1.indegrees, center = TRUE, scale = TRUE) 
+
+
+gof1.triads <- sienaGOF(hmod0.results,TriadCensus,varName = "contacts",
+                            cluster = clust, levls = c(1,3,11,16))
+plot(gof1.triads,center = TRUE,scale = TRUE)
+
+```
+
+
+```{r}
+parameter <- hmod0.results$effects$effectName
+estimate <- hmod0.results$theta
+st.error <- sqrt(diag(hmod0.results$covtheta))
+normal.variate <- estimate/st.error
+p.value.2sided <- 2*pnorm(abs(normal.variate),lower.tail = FALSE)
+(results.table <- data.frame(parameter,
+	estimate = round(estimate,3),
+	st.error = round(st.error,3),
+	normal.variate = round(normal.variate,2),
+	p.value = round(p.value.2sided,4)
+))
+
+write.csv(results.table, "model_results_Siena_simX_egoX.csv")
+```
